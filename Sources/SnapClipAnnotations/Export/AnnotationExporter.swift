@@ -16,6 +16,21 @@ private struct SendableCGImage: @unchecked Sendable {
 /// Flattens annotations onto an NSImage for export.
 public enum AnnotationExporter {
 
+    /// Maximum output dimension (in pixels) for the flattened image. Caller-supplied
+    /// images larger than this are scaled down so we never allocate a bitmap larger
+    /// than ~16384×16384×4 ≈ 1 GiB. Both axes are clamped together to preserve aspect.
+    public static let maxOutputPixelDimension: CGFloat = 16384
+
+    /// Computes the (possibly downscaled) output size and the corresponding render
+    /// scale so `outSizePoints * scale ≤ maxOutputPixelDimension` on both axes.
+    private static func clampedRenderScale(outSize: CGSize, baseScale: CGFloat) -> CGFloat {
+        let pixelW = outSize.width * baseScale
+        let pixelH = outSize.height * baseScale
+        let maxAxis = max(pixelW, pixelH)
+        guard maxAxis > maxOutputPixelDimension else { return baseScale }
+        return baseScale * (maxOutputPixelDimension / maxAxis)
+    }
+
     /// Render the annotated image into a single NSImage.
     /// CI/CGContext composition runs off the main actor; only the SwiftUI
     /// `ImageRenderer` overlay pass hops back to main (it is `@MainActor`).
@@ -45,7 +60,8 @@ public enum AnnotationExporter {
         guard outSize.width > 0, outSize.height > 0 else { return baseImage }
 
         // 3. Render the SwiftUI overlay on main (ImageRenderer is @MainActor).
-        let scale = await MainActor.run { NSScreen.main?.backingScaleFactor ?? 2.0 }
+        let baseScale = await MainActor.run { NSScreen.main?.backingScaleFactor ?? 2.0 }
+        let scale = clampedRenderScale(outSize: outSize, baseScale: baseScale)
         let overlay: CGImage? = await renderAnnotationOverlay(
             annotations: annotations,
             size: outSize,
@@ -89,7 +105,8 @@ public enum AnnotationExporter {
         let crop = cropRect?.standardized.intersection(CGRect(origin: .zero, size: image.size))
         let outSize = crop?.size ?? image.size
         guard outSize.width > 0, outSize.height > 0 else { return baseImage }
-        let scale = NSScreen.main?.backingScaleFactor ?? 2.0
+        let baseScale = NSScreen.main?.backingScaleFactor ?? 2.0
+        let scale = clampedRenderScale(outSize: outSize, baseScale: baseScale)
         let overlay = renderAnnotationOverlaySync(
             annotations: annotations,
             size: outSize,
@@ -116,6 +133,12 @@ public enum AnnotationExporter {
     ) -> NSImage {
         let pixelW = Int(outSize.width * scale)
         let pixelH = Int(outSize.height * scale)
+        // Defense in depth: clampedRenderScale should already keep us under the cap,
+        // but refuse pathological inputs (e.g. NaN-producing image sizes) outright
+        // rather than asking CGContext to allocate gigabytes.
+        let maxAxis = Int(maxOutputPixelDimension)
+        guard pixelW > 0, pixelH > 0,
+              pixelW <= maxAxis, pixelH <= maxAxis else { return base }
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         guard let ctx = CGContext(
             data: nil,

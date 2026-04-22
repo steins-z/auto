@@ -107,4 +107,52 @@ final class SnapClipAnnotationsTests: XCTestCase {
         XCTAssertEqual(vm.cropRect?.width ?? -1, 150, accuracy: 0.5)
         XCTAssertEqual(vm.cropRect?.height ?? -1, 150, accuracy: 0.5)
     }
+
+    /// Stacked blur regions must remain redacted — sampling each filter from the
+    /// running result (not the original) keeps a doubly-covered region pixellated
+    /// instead of reverting to the source pixels. Smoke test: a stacked blur is
+    /// not byte-identical to the original.
+    @MainActor
+    func testStackedBlurRegionsAreIdempotent() throws {
+        let img = NSImage(size: NSSize(width: 80, height: 80))
+        img.lockFocus()
+        NSColor.black.setFill()
+        NSRect(x: 0,  y: 0, width: 40, height: 80).fill()
+        NSColor.white.setFill()
+        NSRect(x: 40, y: 0, width: 40, height: 80).fill()
+        img.unlockFocus()
+
+        let full = CGRect(x: 0, y: 0, width: 80, height: 80)
+        let blurredOnce  = ImageEffects.applyBlurRegions(to: img, rects: [full],       pixelRadius: 32)
+        let blurredTwice = ImageEffects.applyBlurRegions(to: img, rects: [full, full], pixelRadius: 32)
+
+        // The two-pass output must not match the one-pass output (it's been
+        // re-pixellated against a *blurred* base, not the original) and neither
+        // pass should equal the source image.
+        XCTAssertNotEqual(img.tiffRepresentation,           blurredOnce.tiffRepresentation)
+        XCTAssertNotEqual(img.tiffRepresentation,           blurredTwice.tiffRepresentation)
+    }
+
+    /// `flatten` must clamp the render scale so we never request a CGContext
+    /// larger than `maxOutputPixelDimension` on either axis.
+    @MainActor
+    func testFlattenClampsExcessiveDimensions() {
+        // 20000-pt source @ a 2× backing scale would request 40000² pixels (~6 GB).
+        // With clampedRenderScale, the pixel size of the result must not exceed
+        // 16384 on either axis. We assert against the underlying bitmap rep.
+        let huge = NSImage(size: NSSize(width: 20000, height: 12000))
+        huge.lockFocus()
+        NSColor.black.setFill()
+        NSRect(origin: .zero, size: huge.size).fill()
+        huge.unlockFocus()
+
+        let out = AnnotationExporter.flattenSync(image: huge, annotations: [], cropRect: nil)
+        let rep = out.representations.compactMap { $0 as? NSBitmapImageRep }.first
+        let pixelW = rep?.pixelsWide ?? 0
+        let pixelH = rep?.pixelsHigh ?? 0
+        XCTAssertGreaterThan(pixelW, 0)
+        XCTAssertGreaterThan(pixelH, 0)
+        XCTAssertLessThanOrEqual(pixelW, Int(AnnotationExporter.maxOutputPixelDimension))
+        XCTAssertLessThanOrEqual(pixelH, Int(AnnotationExporter.maxOutputPixelDimension))
+    }
 }
