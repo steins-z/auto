@@ -154,6 +154,14 @@ struct HotkeyRecorderButton: View {
                 isRecording = false
                 return
             }
+            // A global hotkey without modifiers would steal every press of the bound key
+            // from every app — refuse and stay in recording mode so the user can try again.
+            let flags = NSEvent.ModifierFlags(rawValue: modifiers)
+            let required: NSEvent.ModifierFlags = [.command, .control, .option]
+            if flags.intersection(required).isEmpty {
+                NSSound.beep()
+                return
+            }
             binding = HotkeyBinding(keyCode: UInt32(keyCode), modifierFlags: UInt32(modifiers))
             isRecording = false
         })

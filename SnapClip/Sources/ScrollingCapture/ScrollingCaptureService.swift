@@ -185,24 +185,32 @@ final class ScrollingCaptureService {
         for step in 0..<configuration.maxFrames {
             try await Task.sleep(nanoseconds: UInt64(configuration.scrollSettleDelay * 1_000_000_000))
             guard let image = captureRegion(captureRect) else { throw CaptureError.captureFailed }
+
+            // Browser termination: AXWebArea doesn't expose a readable scroll offset, so
+            // we detect "no further scroll happened" by comparing the new frame against
+            // the previous one. Two near-identical consecutive frames mean the page hit
+            // bottom (or the synthesised wheel event was ignored).
+            if scrollable.kind == .webArea, step > 0, let previous = images.last,
+               framesAreNearlyIdentical(previous, image) {
+                break
+            }
             images.append(image)
 
             try assertIdentity(scrollable)
-            let beforeOffset = currentScrollOffsetPoints(scrollable, viewportHeight: frame.height) ?? CGFloat(step) * frame.height
             scroll(scrollable, by: frame.height * 0.85, viewportFrame: frame)
             try await Task.sleep(nanoseconds: UInt64(configuration.scrollSettleDelay * 1_000_000_000))
-            let afterOffset = currentScrollOffsetPoints(scrollable, viewportHeight: frame.height) ?? beforeOffset
 
-            let delta = afterOffset - beforeOffset
-            if delta < configuration.scrollProgressThreshold {
-                // Scroll didn't advance — bottom reached (or not scrollable any further).
-                break
+            // ScrollArea termination: native scroll views expose a writable AXValue we can
+            // read back, so prefer the offset-based signal — it stops one frame earlier
+            // than the pixel-diff path.
+            if scrollable.kind == .scrollArea {
+                let afterOffset = currentScrollOffsetPoints(scrollable, viewportHeight: frame.height) ?? CGFloat(step) * frame.height
+                let delta = afterOffset - lastOffset
+                if step > 0 && delta < configuration.scrollProgressThreshold {
+                    break
+                }
+                lastOffset = afterOffset
             }
-            // Detect identical offsets across consecutive iterations as a secondary stop.
-            if abs(afterOffset - lastOffset) < configuration.scrollProgressThreshold && step > 0 {
-                break
-            }
-            lastOffset = afterOffset
         }
         return images
     }
@@ -222,14 +230,13 @@ final class ScrollingCaptureService {
         return CGRect(origin: origin, size: size)
     }
 
-    /// AX returns frames in screen coordinates with **top-left origin** relative to the
-    /// primary display. Convert to Cocoa's bottom-left origin (relative to the union of
-    /// all displays), which is what `CGWindowListCreateImage` and most CG APIs expect.
+    /// AX `kAXPositionAttribute` returns screen coordinates with **top-left origin**,
+    /// relative to the primary display, in points. `CGWindowListCreateImage` expects
+    /// the same coordinate system, so the rect passes through unchanged. On
+    /// secondary displays the X (and possibly Y) coordinates may be negative or larger
+    /// than the primary display's size, but the math is the same — there's no per-screen
+    /// adjustment needed because both APIs work in the union-of-displays CG space.
     private func cocoaRect(fromAXFrame ax: CGRect) -> CGRect {
-        // CGWindowListCreateImage actually accepts top-left CG-origin coordinates relative
-        // to the primary display, so AX frames pass through unchanged. We keep this
-        // function as the single coordinate-conversion seam for clarity and to make
-        // multi-display assumptions explicit.
         return ax
     }
 
@@ -408,6 +415,31 @@ final class ScrollingCaptureService {
         var bytes = [UInt8](repeating: 0, count: length)
         CFDataGetBytes(data, CFRange(location: 0, length: length), &bytes)
         return bytes
+    }
+
+    /// Cheap "did anything change?" check. Sub-samples both buffers and computes mean
+    /// squared per-byte difference; below the threshold the frames are treated as
+    /// identical. Used to detect end-of-page when scrolling browser web areas, where
+    /// AX won't tell us the scroll position.
+    private func framesAreNearlyIdentical(_ a: CGImage, _ b: CGImage) -> Bool {
+        guard a.width == b.width, a.height == b.height else { return false }
+        guard let bufA = pixelData(a), let bufB = pixelData(b) else { return false }
+        let length = min(bufA.count, bufB.count)
+        guard length > 0 else { return false }
+        let stride = max(1, length / 4096) // ~4k samples is plenty for a similarity check
+        var diffSum = 0
+        var samples = 0
+        var i = 0
+        while i < length {
+            let d = Int(bufA[i]) - Int(bufB[i])
+            diffSum += d * d
+            samples += 1
+            i += stride
+        }
+        let mean = Double(diffSum) / Double(samples)
+        // ≤16 mean-squared (≈±4 per byte) survives anti-aliasing & re-rasterisation noise
+        // but flags any real content change.
+        return mean <= 16.0
     }
 }
 

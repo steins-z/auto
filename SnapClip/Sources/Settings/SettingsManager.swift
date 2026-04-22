@@ -112,7 +112,15 @@ final class SettingsManager: ObservableObject {
         let shadowRaw = defaults.object(forKey: SettingsKey.windowShadow) as? Bool
         self.includeWindowShadow = shadowRaw ?? true
 
-        self.launchAtLogin = defaults.bool(forKey: SettingsKey.launchAtLogin)
+        // Reconcile against the system: SMAppService is the source of truth, not our
+        // saved bool — the user may have toggled it in System Settings while we were
+        // closed, and a previous register/unregister may have failed silently.
+        let savedLaunchAtLogin = defaults.bool(forKey: SettingsKey.launchAtLogin)
+        let actualLaunchAtLogin = LaunchAtLoginController.isEnabled
+        self.launchAtLogin = actualLaunchAtLogin
+        if savedLaunchAtLogin != actualLaunchAtLogin {
+            defaults.set(actualLaunchAtLogin, forKey: SettingsKey.launchAtLogin)
+        }
 
         let appearanceRaw = (defaults.string(forKey: SettingsKey.appearance)).flatMap(AppearanceMode.init(rawValue:)) ?? .system
         self.appearance = appearanceRaw
@@ -204,19 +212,16 @@ final class SettingsManager: ObservableObject {
     }
 
     private static func resolveSaveDirectory(defaults: UserDefaults) -> URL? {
-        if let data = defaults.data(forKey: SettingsKey.saveDirectoryBookmark) {
-            var stale = false
-            if let url = try? URL(resolvingBookmarkData: data,
-                                  options: [.withSecurityScope],
-                                  relativeTo: nil,
-                                  bookmarkDataIsStale: &stale) {
-                return url
-            }
-        }
-        if let path = defaults.string(forKey: SettingsKey.saveDirectoryPath) {
-            return URL(fileURLWithPath: path)
-        }
-        return nil
+        // Bookmark only — the legacy plain-path fallback was removed because it returned
+        // an unsandboxed URL that wouldn't actually be writable, masking the failure
+        // until save time. If the bookmark is missing or unreadable, callers fall back
+        // to ~/Desktop and the user is prompted to re-pick a folder on first save.
+        guard let data = defaults.data(forKey: SettingsKey.saveDirectoryBookmark) else { return nil }
+        var stale = false
+        return try? URL(resolvingBookmarkData: data,
+                        options: [.withSecurityScope],
+                        relativeTo: nil,
+                        bookmarkDataIsStale: &stale)
     }
 
     // MARK: - Appearance
