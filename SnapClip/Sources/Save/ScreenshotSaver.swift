@@ -7,6 +7,7 @@ enum ScreenshotSaverError: Error {
     case noBitmap
 }
 
+@MainActor
 enum ScreenshotSaver {
     static func defaultFilename(date: Date = Date(), format: ImageFormat) -> String {
         let formatter = DateFormatter()
@@ -15,28 +16,29 @@ enum ScreenshotSaver {
         return "SnapClip_\(formatter.string(from: date)).\(format.fileExtension)"
     }
 
+    /// Saves the image into the configured directory. Acquires security-scoped access for
+    /// the directory before writing so this works under sandbox.
     @discardableResult
     static func save(image: NSImage,
-                     to directory: URL? = nil,
                      format: ImageFormat? = nil,
                      quality: Double? = nil) throws -> URL {
         let settings = SettingsManager.shared
-        let dir = directory ?? settings.saveDirectory
         let fmt = format ?? settings.imageFormat
         let q = quality ?? settings.jpegQuality
-
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-
-        let filename = defaultFilename(format: fmt)
-        let url = dir.appendingPathComponent(filename)
-
         let data = try encode(image: image, format: fmt, quality: q)
-        try data.write(to: url, options: .atomic)
-        return url
+        let filename = defaultFilename(format: fmt)
+
+        return try settings.withSaveDirectoryAccess { dir in
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let url = dir.appendingPathComponent(filename)
+            try data.write(to: url, options: .atomic)
+            return url
+        }
     }
 
+    /// "Save As…" with the configured directory pre-filled. The save panel itself returns
+    /// a security-scoped URL, so writing through it works regardless of the persisted bookmark.
     static func saveAs(image: NSImage,
-                       suggestedDirectory: URL? = nil,
                        format: ImageFormat? = nil,
                        quality: Double? = nil,
                        completion: @escaping (Result<URL, Error>) -> Void) {
@@ -46,7 +48,7 @@ enum ScreenshotSaver {
 
         let panel = NSSavePanel()
         panel.nameFieldStringValue = defaultFilename(format: fmt)
-        panel.directoryURL = suggestedDirectory ?? settings.saveDirectory
+        panel.directoryURL = settings.saveDirectory
         if let type = UTType(filenameExtension: fmt.fileExtension) {
             panel.allowedContentTypes = [type]
         }

@@ -81,7 +81,7 @@ private struct GeneralTab: View {
         panel.allowsMultipleSelection = false
         panel.directoryURL = settings.saveDirectory
         if panel.runModal() == .OK, let url = panel.url {
-            settings.saveDirectory = url
+            settings.setSaveDirectory(url)
         }
     }
 }
@@ -149,6 +149,11 @@ struct HotkeyRecorderButton: View {
                 .frame(minWidth: 120)
         }
         .background(KeyEventCatcher(isActive: isRecording) { keyCode, modifiers in
+            // Escape cancels the recording instead of binding the hotkey to ⎋.
+            if keyCode == kVK_Escape {
+                isRecording = false
+                return
+            }
             binding = HotkeyBinding(keyCode: UInt32(keyCode), modifierFlags: UInt32(modifiers))
             isRecording = false
         })
@@ -174,11 +179,17 @@ private struct KeyEventCatcher: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {
         guard let view = nsView as? CatchingView else { return }
         view.onKey = onKey
-        if isActive { view.window?.makeFirstResponder(view) }
+        // Only grab focus on the leading edge — re-grabbing on every SwiftUI update
+        // steals first responder from other inputs in the window.
+        if isActive && !view.wasActive {
+            view.window?.makeFirstResponder(view)
+        }
+        view.wasActive = isActive
     }
 
     private final class CatchingView: NSView {
         var onKey: (Int, UInt) -> Void
+        var wasActive = false
         init(onKey: @escaping (Int, UInt) -> Void) {
             self.onKey = onKey
             super.init(frame: .zero)

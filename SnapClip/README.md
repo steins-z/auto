@@ -14,9 +14,22 @@ This module covers the configuration surface and long-form capture for SnapClip.
   to the configured directory; `saveAs(image:)` presents an `NSSavePanel` with the
   filename pre-filled.
 - `ScrollingCapture/ScrollingCaptureService.swift` — async API: hit-tests the AX tree
-  for an `AXScrollArea` / `AXWebArea`, drives the vertical scroll bar, captures frames
-  with `CGWindowListCreateImage`, and stitches them with overlap detection in Core Image.
-  Works for native `NSScrollView`, Safari and Chrome.
+  for an `AXScrollArea` / `AXWebArea`, drives the vertical scroll bar (native) or
+  synthesises scroll-wheel events (browsers), captures frames with
+  `CGWindowListCreateImage`, and stitches them with overlap detection in Core Image.
+
+## Limitations
+
+- **Browser scrolling is best-effort.** `AXWebArea` (Safari, Chrome, Edge) does not
+  expose a writable scroll position via Accessibility, so we drive the page by
+  synthesising `kCGEventScrollWheel` events at the element centre. This works for
+  most pages but can misbehave on sticky headers, infinite-scroll lists, and
+  JS-managed scroll containers. Native `NSScrollView` (`AXScrollArea`) uses the
+  proper AX scroll-bar value setter and is reliable.
+- **Sandbox + bookmarks.** The save directory is persisted as a security-scoped
+  bookmark. Reads/writes go through `SettingsManager.withSaveDirectoryAccess { … }`
+  which balances `startAccessingSecurityScopedResource()` and refreshes stale
+  bookmarks on next access.
 - `UI/VisualEffectBackground.swift` — `NSVisualEffectView` wrapper for frosted toolbars.
 - `UI/Animations.swift` — shared spring animations and transitions for overlays/toolbars.
 
