@@ -88,7 +88,6 @@ public enum AnnotationRenderer {
         guard length > 0.5 else { return }
 
         let headLength = max(12, width * 4)
-        let headWidth  = max(10, width * 3)
         let angle = atan2(dy, dx)
 
         // Shaft (shortened so arrowhead doesn't overshoot)
@@ -119,6 +118,5 @@ public enum AnnotationRenderer {
         head.addLine(to: right)
         head.closeSubpath()
         context.fill(head, with: .color(color))
-        _ = headWidth
     }
 }

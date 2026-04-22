@@ -144,15 +144,22 @@ public struct AnnotationCanvasView: View {
                            displayRect: CGRect) -> some View {
         let viewPoint = toViewSpace(origin, displayRect: displayRect)
         let scale = displayRect.width / viewModel.imageSize.width
+        let displayFontSize = annotation.style.fontSize * scale
+        let editorWidth: CGFloat = 200
+        let editorHeight = displayFontSize * 1.4
         return TextField("Text", text: Binding(
             get: { string },
             set: { viewModel.updateText(annotation.id, string: $0) }
         ))
         .textFieldStyle(.plain)
-        .font(.system(size: annotation.style.fontSize * scale, weight: .semibold))
+        .font(.system(size: displayFontSize, weight: .semibold))
         .foregroundColor(Color(annotation.style.strokeColor))
-        .frame(minWidth: 80)
-        .position(x: viewPoint.x + 60, y: viewPoint.y + annotation.style.fontSize * scale * 0.7)
+        .frame(width: editorWidth, height: editorHeight, alignment: .leading)
+        // SwiftUI .position centers the frame on (x, y). Offset by half the
+        // editor frame so the *left edge* lands at viewPoint.x — matching where
+        // AnnotationRenderer.draw places the text with anchor: .topLeading.
+        .position(x: viewPoint.x + editorWidth / 2,
+                  y: viewPoint.y + editorHeight / 2)
         .opacity(viewModel.editingTextID == annotation.id || string.isEmpty ? 1 : 0)
         .allowsHitTesting(viewModel.selectedTool == .text || viewModel.editingTextID == annotation.id)
     }
@@ -182,30 +189,11 @@ public struct AnnotationCanvasView: View {
                     .strokeBorder(Color.white, lineWidth: 1)
                     .frame(width: frame.width, height: frame.height)
                     .position(x: frame.midX, y: frame.midY)
-
-                // Resize handles
-                ForEach(Array(handlePositions(in: frame).enumerated()), id: \.offset) { _, p in
-                    Rectangle()
-                        .fill(Color.white)
-                        .frame(width: 8, height: 8)
-                        .position(p)
-                }
             }
+            // Re-drawing the crop rectangle replaces the existing one. Interactive
+            // resize handles will be added in a follow-up — see issue tracker.
             .allowsHitTesting(false)
         }
-    }
-
-    private func handlePositions(in rect: CGRect) -> [CGPoint] {
-        [
-            CGPoint(x: rect.minX, y: rect.minY),
-            CGPoint(x: rect.midX, y: rect.minY),
-            CGPoint(x: rect.maxX, y: rect.minY),
-            CGPoint(x: rect.minX, y: rect.midY),
-            CGPoint(x: rect.maxX, y: rect.midY),
-            CGPoint(x: rect.minX, y: rect.maxY),
-            CGPoint(x: rect.midX, y: rect.maxY),
-            CGPoint(x: rect.maxX, y: rect.maxY)
-        ]
     }
 
     // MARK: - Blur live preview
@@ -219,27 +207,66 @@ public struct AnnotationCanvasView: View {
         } ?? [])
 
         if !blurRects.isEmpty {
-            let scale = displayRect.width / viewModel.imageSize.width
-            ZStack {
-                ForEach(Array(blurRects.enumerated()), id: \.offset) { _, r in
-                    let frame = CGRect(
-                        x: displayRect.minX + r.minX * scale,
-                        y: displayRect.minY + r.minY * scale,
-                        width: r.width * scale,
-                        height: r.height * scale
-                    )
-                    Image(nsImage: viewModel.image)
-                        .resizable()
-                        .interpolation(.none)
-                        .scaledToFill()
-                        .frame(width: displayRect.width, height: displayRect.height)
-                        .blur(radius: max(2, viewModel.style.blurRadius * 0.6))
-                        .frame(width: frame.width, height: frame.height,
-                               alignment: .topLeading)
-                        .clipped()
-                        .position(x: frame.midX, y: frame.midY)
-                        .allowsHitTesting(false)
+            BlurRegionOverlay(
+                source: viewModel.image,
+                pixelRadius: viewModel.style.blurRadius,
+                rects: blurRects,
+                displayRect: displayRect,
+                imageSize: viewModel.imageSize
+            )
+        }
+    }
+}
+
+/// Renders blur regions using the same Core Image pixellation that the exporter
+/// bakes in, so the live preview matches the saved output exactly.
+private struct BlurRegionOverlay: View {
+    let source: NSImage
+    let pixelRadius: CGFloat
+    let rects: [CGRect]
+    let displayRect: CGRect
+    let imageSize: CGSize
+
+    @State private var pixellated: NSImage?
+    @State private var cacheKey: CGFloat = -1
+
+    var body: some View {
+        Group {
+            if let pixellated {
+                let scale = displayRect.width / imageSize.width
+                ZStack {
+                    ForEach(Array(rects.enumerated()), id: \.offset) { _, r in
+                        let frame = CGRect(
+                            x: displayRect.minX + r.minX * scale,
+                            y: displayRect.minY + r.minY * scale,
+                            width: r.width * scale,
+                            height: r.height * scale
+                        )
+                        Image(nsImage: pixellated)
+                            .resizable()
+                            .interpolation(.none)
+                            .frame(width: displayRect.width, height: displayRect.height)
+                            .frame(width: frame.width, height: frame.height,
+                                   alignment: .topLeading)
+                            .clipped()
+                            .position(x: frame.midX, y: frame.midY)
+                    }
                 }
+                .allowsHitTesting(false)
+            } else {
+                Color.clear
+            }
+        }
+        .task(id: pixelRadius) {
+            if cacheKey == pixelRadius, pixellated != nil { return }
+            let radius = pixelRadius
+            let img = source
+            let result = await Task.detached(priority: .userInitiated) {
+                ImageEffects.pixellated(img, pixelRadius: radius)
+            }.value
+            await MainActor.run {
+                self.pixellated = result
+                self.cacheKey = radius
             }
         }
     }

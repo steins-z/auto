@@ -21,12 +21,14 @@ public struct AnnotationEditorView: View {
                 .ignoresSafeArea()
 
             AnnotationToolbar(viewModel: viewModel) {
-                let result = AnnotationExporter.flatten(
-                    image: viewModel.image,
-                    annotations: viewModel.annotations,
-                    cropRect: viewModel.cropRect
-                )
-                onCommit(result)
+                Task {
+                    let result = await AnnotationExporter.flatten(
+                        image: viewModel.image,
+                        annotations: viewModel.annotations,
+                        cropRect: viewModel.cropRect
+                    )
+                    await MainActor.run { onCommit(result) }
+                }
             }
             .padding(.top, 14)
         }

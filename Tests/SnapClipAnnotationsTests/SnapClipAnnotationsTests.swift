@@ -67,7 +67,7 @@ final class SnapClipAnnotationsTests: XCTestCase {
             kind: .rectangle(rect: CGRect(x: 20, y: 20, width: 50, height: 50)),
             style: vm.style
         ))
-        let out = AnnotationExporter.flatten(
+        let out = AnnotationExporter.flattenSync(
             image: vm.image,
             annotations: vm.annotations,
             cropRect: nil
@@ -85,5 +85,26 @@ final class SnapClipAnnotationsTests: XCTestCase {
         vm.endDrag(at: CGPoint(x: 250, y: 200), from: CGPoint(x: 50, y: 50))
         XCTAssertEqual(vm.effectiveSize.width, 200, accuracy: 0.5)
         XCTAssertEqual(vm.effectiveSize.height, 150, accuracy: 0.5)
+    }
+
+    /// Regression: crop drag anchored to the original start point, not to the
+    /// previous-frame normalized origin. Reverse-direction drag must still produce
+    /// a rect spanning start ↔ current.
+    @MainActor
+    func testCropDragReverseDirectionAnchorsToStart() {
+        let vm = AnnotationEditorViewModel(image: makeImage(width: 400, height: 300))
+        vm.selectedTool = .crop
+        let start = CGPoint(x: 200, y: 200)
+        vm.beginDrag(at: start)
+        // First update extends down-right.
+        vm.updateDrag(to: CGPoint(x: 300, y: 250), from: start)
+        // Now reverse: drag up-left past the original start.
+        vm.updateDrag(to: CGPoint(x: 50, y: 50), from: start)
+        vm.endDrag(at: CGPoint(x: 50, y: 50), from: start)
+        // Cropped rect must span 50…200 in both axes — i.e. anchored at start.
+        XCTAssertEqual(vm.cropRect?.minX ?? -1, 50, accuracy: 0.5)
+        XCTAssertEqual(vm.cropRect?.minY ?? -1, 50, accuracy: 0.5)
+        XCTAssertEqual(vm.cropRect?.width ?? -1, 150, accuracy: 0.5)
+        XCTAssertEqual(vm.cropRect?.height ?? -1, 150, accuracy: 0.5)
     }
 }

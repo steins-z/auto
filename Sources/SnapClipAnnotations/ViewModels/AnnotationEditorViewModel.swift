@@ -87,7 +87,11 @@ public final class AnnotationEditorViewModel: ObservableObject {
             inProgress = Annotation(kind: .pen(points: [point]), style: style)
         case .highlight:
             var s = style
-            if s.fillColor == nil { s.fillColor = .highlightYellow }
+            if s.fillColor == nil {
+                var c = s.strokeColor
+                c.opacity = 0.35
+                s.fillColor = c
+            }
             inProgress = Annotation(kind: .highlight(rect: CGRect(origin: point, size: .zero)),
                                     style: s)
         case .blur:
@@ -104,11 +108,8 @@ public final class AnnotationEditorViewModel: ObservableObject {
 
     public func updateDrag(to point: CGPoint, from start: CGPoint) {
         guard var current = inProgress else {
-            if selectedTool == .crop, let origin = pendingCropRect?.origin {
-                pendingCropRect = CGRect(x: min(origin.x, point.x),
-                                         y: min(origin.y, point.y),
-                                         width: abs(point.x - origin.x),
-                                         height: abs(point.y - origin.y))
+            if selectedTool == .crop {
+                pendingCropRect = rect(from: start, to: point)
             }
             return
         }
@@ -145,11 +146,9 @@ public final class AnnotationEditorViewModel: ObservableObject {
         }
         guard let current = inProgress else { return }
         defer { inProgress = nil }
-        // Skip degenerate shapes
-        if current.boundingRect.width < 2 && current.boundingRect.height < 2,
-           case .pen = current.kind {
-            return
-        }
+        // Skip degenerate shapes (accidental clicks).
+        let bounds = current.boundingRect
+        if bounds.width < 2 && bounds.height < 2 { return }
         snapshot()
         annotations.append(current)
     }

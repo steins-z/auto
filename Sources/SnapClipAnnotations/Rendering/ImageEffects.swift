@@ -57,4 +57,27 @@ public enum ImageEffects {
         result.addRepresentation(outRep)
         return result
     }
+
+    /// Returns a fully pixellated copy of the image (no rect masking) — used by the
+    /// live editor preview so blur regions look identical to the exported result.
+    public static func pixellated(_ image: NSImage, pixelRadius: CGFloat) -> NSImage {
+        guard let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let cg = rep.cgImage else { return image }
+        let pointSize = image.size
+        guard pointSize.width > 0, pointSize.height > 0 else { return image }
+        let scaleX = CGFloat(cg.width) / pointSize.width
+        let baseCI = CIImage(cgImage: cg)
+        let pixellate = CIFilter.pixellate()
+        pixellate.inputImage = baseCI
+        pixellate.center = CGPoint(x: baseCI.extent.midX, y: baseCI.extent.midY)
+        pixellate.scale = Float(max(2, pixelRadius * scaleX))
+        guard let out = pixellate.outputImage?.cropped(to: baseCI.extent),
+              let outCG = CIContext().createCGImage(out, from: baseCI.extent) else { return image }
+        let outRep = NSBitmapImageRep(cgImage: outCG)
+        outRep.size = pointSize
+        let result = NSImage(size: pointSize)
+        result.addRepresentation(outRep)
+        return result
+    }
 }
