@@ -24,7 +24,5 @@
     <true/>
     <key>NSScreenCaptureUsageDescription</key>
     <string>SnapClip needs Screen Recording permission to capture screenshots of your screen and windows.</string>
-    <key>NSAppleEventsUsageDescription</key>
-    <string>SnapClip uses Apple Events for advanced screenshot capabilities.</string>
 </dict>
 </plist>
