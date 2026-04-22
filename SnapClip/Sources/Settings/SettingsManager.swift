@@ -130,32 +130,63 @@ final class SettingsManager: ObservableObject {
     // MARK: - Save directory
 
     /// Update the save directory and persist a fresh security-scoped bookmark.
-    func setSaveDirectory(_ url: URL) {
-        saveDirectory = url
+    /// Returns true on success. **Fails closed:** if a security-scoped bookmark cannot
+    /// be created (typically a sandbox/entitlements problem), the change is rejected and
+    /// an alert is shown rather than silently downgrading to a plain path that the
+    /// sandbox would later block at write time.
+    @discardableResult
+    func setSaveDirectory(_ url: URL) -> Bool {
         do {
             let data = try url.bookmarkData(options: [.withSecurityScope],
                                             includingResourceValuesForKeys: nil,
                                             relativeTo: nil)
             defaults.set(data, forKey: SettingsKey.saveDirectoryBookmark)
             defaults.removeObject(forKey: SettingsKey.saveDirectoryPath)
+            saveDirectory = url
+            return true
         } catch {
-            // Fall back to plain path for unsandboxed dev builds.
-            defaults.removeObject(forKey: SettingsKey.saveDirectoryBookmark)
-            defaults.set(url.path, forKey: SettingsKey.saveDirectoryPath)
+            presentBookmarkFailureAlert(url: url, error: error)
+            return false
         }
+    }
+
+    private func presentBookmarkFailureAlert(url: URL, error: Error) {
+        let alert = NSAlert()
+        alert.messageText = "Couldn't Use Folder"
+        alert.informativeText = """
+        SnapClip needs persistent access to "\(url.lastPathComponent)" but couldn't create a \
+        security-scoped bookmark (\(error.localizedDescription)). The save folder hasn't been \
+        changed. If SnapClip is sandboxed, grant access by re-selecting this folder; if you're \
+        running an unsigned dev build, an entitlements/signing problem is likely the cause.
+        """
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     /// Run `body` with the save directory accessible under sandbox. Balances
     /// `startAccessingSecurityScopedResource()` / `stopAccessingSecurityScopedResource()`.
-    /// If the bookmark is stale, refreshes it on the way out.
+    /// If the bookmark is stale, refreshes it silently on the way out (no UI alert —
+    /// we already have a working URL, so a refresh failure shouldn't interrupt the save).
     @discardableResult
     func withSaveDirectoryAccess<T>(_ body: (URL) throws -> T) rethrows -> T {
         let (url, didStart, isStale) = resolveCurrentSaveDirectory()
         defer {
             if didStart { url.stopAccessingSecurityScopedResource() }
-            if isStale { setSaveDirectory(url) } // refresh persisted bookmark
+            if isStale { refreshBookmarkSilently(for: url) }
         }
         return try body(url)
+    }
+
+    private func refreshBookmarkSilently(for url: URL) {
+        do {
+            let data = try url.bookmarkData(options: [.withSecurityScope],
+                                            includingResourceValuesForKeys: nil,
+                                            relativeTo: nil)
+            defaults.set(data, forKey: SettingsKey.saveDirectoryBookmark)
+        } catch {
+            NSLog("SnapClip: failed to refresh stale bookmark for \(url.path): \(error)")
+        }
     }
 
     private func resolveCurrentSaveDirectory() -> (url: URL, didStart: Bool, stale: Bool) {

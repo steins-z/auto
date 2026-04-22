@@ -14,10 +14,18 @@ import CoreGraphics
 /// `kCGEventScrollWheel` events at the element's centre. This works for most pages
 /// but is fragile (sticky headers, infinite-scroll lists, JS-managed scroll containers
 /// can still misbehave). See `Limitations` in README.
+///
+/// **Identity check.** When the scrollable element is discovered we record the owning
+/// process's PID, the bundle identifier, *and* the PID of the window directly under
+/// the cursor at that moment. Every scroll/key/wheel write re-validates the element's
+/// PID against that snapshot — if a different app has slipped under the cursor or
+/// inserted itself into the AX tree at our element's coordinates, we abort instead of
+/// blindly writing values into someone else's view hierarchy.
 final class ScrollingCaptureService {
     enum CaptureError: Error {
         case accessibilityNotTrusted
         case noScrollableElement
+        case identityMismatch
         case captureFailed
         case stitchingFailed
     }
@@ -71,7 +79,16 @@ final class ScrollingCaptureService {
                                                       Float(point.y),
                                                       &hit)
         guard result == .success, let element = hit else { return nil }
-        return ascendToScrollable(from: element)
+        guard let scrollable = ascendToScrollable(from: element) else { return nil }
+        // Cross-check: the element's owning PID must match the on-screen window owner
+        // at the same point. If they disagree, a different app has either slipped
+        // under the cursor or inserted itself into the AX tree — refuse to operate.
+        let windowOwnerPID = windowOwnerPID(at: point)
+        if let expected = windowOwnerPID, expected != scrollable.pid {
+            NSLog("SnapClip: AX/window PID mismatch at \(point) (ax=\(scrollable.pid), window=\(expected)); refusing to scroll")
+            return nil
+        }
+        return scrollable
     }
 
     private func ascendToScrollable(from element: AXUIElement) -> ScrollableElement? {
@@ -79,10 +96,10 @@ final class ScrollingCaptureService {
         while let node = current {
             if let role = copyAttribute(node, kAXRoleAttribute as String) as? String {
                 if role == (kAXScrollAreaRole as String) {
-                    return ScrollableElement(element: node, kind: .scrollArea)
+                    return makeScrollable(node, kind: .scrollArea)
                 }
                 if role == "AXWebArea" {
-                    return ScrollableElement(element: node, kind: .webArea)
+                    return makeScrollable(node, kind: .webArea)
                 }
                 // AXScrollBar is *part of* a scroll area — keep ascending to the parent
                 // AXScrollArea instead of treating the bar itself as terminal.
@@ -90,6 +107,44 @@ final class ScrollingCaptureService {
             current = parent(of: node)
         }
         return nil
+    }
+
+    private func makeScrollable(_ element: AXUIElement, kind: ScrollableElement.Kind) -> ScrollableElement {
+        var pid: pid_t = 0
+        AXUIElementGetPid(element, &pid)
+        let bundleID = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier
+        return ScrollableElement(element: element, kind: kind, pid: pid, bundleIdentifier: bundleID)
+    }
+
+    /// Returns the PID of the front-most on-screen window containing the given screen point,
+    /// or nil if no window is found. Uses CGWindowList rather than AX so a malicious AX
+    /// hijacker can't fake the answer.
+    private func windowOwnerPID(at point: CGPoint) -> pid_t? {
+        guard let infoList = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
+                                                        kCGNullWindowID) as? [[String: Any]] else { return nil }
+        for info in infoList {
+            guard let bounds = info[kCGWindowBounds as String] as? [String: CGFloat],
+                  let pid = info[kCGWindowOwnerPID as String] as? pid_t,
+                  let layer = info[kCGWindowLayer as String] as? Int else { continue }
+            // Skip overlay/menu/dock layers; we only care about ordinary app windows.
+            if layer != 0 { continue }
+            let rect = CGRect(x: bounds["X"] ?? 0,
+                              y: bounds["Y"] ?? 0,
+                              width: bounds["Width"] ?? 0,
+                              height: bounds["Height"] ?? 0)
+            if rect.contains(point) { return pid }
+        }
+        return nil
+    }
+
+    /// Re-validates that the scrollable element still belongs to the same process we
+    /// originally discovered. Throws `CaptureError.identityMismatch` otherwise.
+    private func assertIdentity(_ scrollable: ScrollableElement) throws {
+        var nowPID: pid_t = 0
+        AXUIElementGetPid(scrollable.element, &nowPID)
+        if nowPID != scrollable.pid {
+            throw CaptureError.identityMismatch
+        }
     }
 
     private func parent(of element: AXUIElement) -> AXUIElement? {
@@ -123,6 +178,7 @@ final class ScrollingCaptureService {
         let captureRect = cocoaRect(fromAXFrame: frame)
 
         // Reset to the top before we start.
+        try assertIdentity(scrollable)
         scrollToTop(scrollable)
         try await Task.sleep(nanoseconds: UInt64(configuration.scrollSettleDelay * 1_000_000_000))
 
@@ -131,6 +187,7 @@ final class ScrollingCaptureService {
             guard let image = captureRegion(captureRect) else { throw CaptureError.captureFailed }
             images.append(image)
 
+            try assertIdentity(scrollable)
             let beforeOffset = currentScrollOffsetPoints(scrollable, viewportHeight: frame.height) ?? CGFloat(step) * frame.height
             scroll(scrollable, by: frame.height * 0.85, viewportFrame: frame)
             try await Task.sleep(nanoseconds: UInt64(configuration.scrollSettleDelay * 1_000_000_000))
@@ -358,4 +415,10 @@ struct ScrollableElement {
     enum Kind { case scrollArea, webArea }
     let element: AXUIElement
     let kind: Kind
+    /// PID of the process that owns this AX element at discovery time. Used by
+    /// `ScrollingCaptureService.assertIdentity` to detect AX-tree hijacking.
+    let pid: pid_t
+    /// Bundle identifier of the owning app, if resolvable. Informational; the PID is
+    /// the load-bearing identity check.
+    let bundleIdentifier: String?
 }
