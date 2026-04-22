@@ -1,64 +1,89 @@
 import Cocoa
-import CoreGraphics
+import Carbon.HIToolbox
 
-/// Global hotkey via CGEvent tap. Watches keyDown events and triggers a callback when
-/// the configured key + modifiers are pressed.
+/// Global hotkey via Carbon's `RegisterEventHotKey`. Unlike a CGEvent tap this does not
+/// require Accessibility permission and fails loudly if registration is rejected.
 final class HotKeyManager {
     var onTrigger: (() -> Void)?
 
-    private var eventTap: CFMachPort?
-    private var runLoopSource: CFRunLoopSource?
-    private var keyCode: CGKeyCode = 7 // "x"
-    private var modifiers: CGEventFlags = [.maskCommand, .maskShift]
+    private var hotKeyRef: EventHotKeyRef?
+    private var eventHandlerRef: EventHandlerRef?
 
-    func register(keyCode: CGKeyCode, modifiers: CGEventFlags) {
-        self.keyCode = keyCode
-        self.modifiers = modifiers
-        installTap()
+    private static let signature: OSType = {
+        let chars: [UInt8] = Array("SCLP".utf8)
+        return (OSType(chars[0]) << 24) | (OSType(chars[1]) << 16) | (OSType(chars[2]) << 8) | OSType(chars[3])
+    }()
+    private static var managerRegistry: [UInt32: HotKeyManager] = [:]
+    private static var nextID: UInt32 = 1
+
+    private var hotKeyID: UInt32 = 0
+
+    /// Register a global hotkey. `keyCode` is a Carbon virtual key code (e.g. `kVK_ANSI_X`).
+    /// `modifiers` is a Carbon modifier mask (e.g. `cmdKey | shiftKey`).
+    /// Returns true on success.
+    @discardableResult
+    func register(keyCode: UInt32, modifiers: UInt32) -> Bool {
+        unregister()
+
+        let id = HotKeyManager.nextID
+        HotKeyManager.nextID += 1
+        self.hotKeyID = id
+        HotKeyManager.managerRegistry[id] = self
+
+        installHandlerIfNeeded()
+
+        let hkID = EventHotKeyID(signature: HotKeyManager.signature, id: id)
+        var ref: EventHotKeyRef?
+        let status = RegisterEventHotKey(keyCode, modifiers, hkID,
+                                         GetApplicationEventTarget(), 0, &ref)
+        guard status == noErr, let ref else {
+            HotKeyManager.managerRegistry.removeValue(forKey: id)
+            NSLog("SnapClip: RegisterEventHotKey failed (status=\(status))")
+            DispatchQueue.main.async { self.presentRegistrationFailedAlert(status: status) }
+            return false
+        }
+        self.hotKeyRef = ref
+        return true
     }
 
-    private func installTap() {
-        let mask: CGEventMask = (1 << CGEventType.keyDown.rawValue)
-        let refcon = Unmanaged.passUnretained(self).toOpaque()
-
-        guard let tap = CGEvent.tapCreate(
-            tap: .cgSessionEventTap,
-            place: .headInsertEventTap,
-            options: .defaultTap,
-            eventsOfInterest: mask,
-            callback: { _, type, event, refcon in
-                guard let refcon else { return Unmanaged.passUnretained(event) }
-                let manager = Unmanaged<HotKeyManager>.fromOpaque(refcon).takeUnretainedValue()
-                if type == .keyDown {
-                    let kc = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
-                    let flags = event.flags
-                    let relevantMask: CGEventFlags = [.maskCommand, .maskShift, .maskAlternate, .maskControl]
-                    if kc == manager.keyCode && (flags.intersection(relevantMask) == manager.modifiers) {
-                        DispatchQueue.main.async { manager.onTrigger?() }
-                        return nil
-                    }
-                }
-                return Unmanaged.passUnretained(event)
-            },
-            userInfo: refcon
-        ) else {
-            NSLog("SnapClip: failed to create event tap (Accessibility permission required)")
-            return
+    func unregister() {
+        if let ref = hotKeyRef {
+            UnregisterEventHotKey(ref)
+            hotKeyRef = nil
         }
-
-        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
-        CGEvent.tapEnable(tap: tap, enable: true)
-        self.eventTap = tap
-        self.runLoopSource = source
+        if hotKeyID != 0 {
+            HotKeyManager.managerRegistry.removeValue(forKey: hotKeyID)
+            hotKeyID = 0
+        }
     }
 
-    deinit {
-        if let source = runLoopSource {
-            CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
-        }
-        if let tap = eventTap {
-            CGEvent.tapEnable(tap: tap, enable: false)
-        }
+    deinit { unregister() }
+
+    private static var sharedHandlerInstalled = false
+    private func installHandlerIfNeeded() {
+        guard !HotKeyManager.sharedHandlerInstalled else { return }
+        var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
+                                 eventKind: UInt32(kEventHotKeyPressed))
+        InstallEventHandler(GetApplicationEventTarget(), { _, eventRef, _ -> OSStatus in
+            guard let eventRef else { return noErr }
+            var hkID = EventHotKeyID()
+            let status = GetEventParameter(eventRef, EventParamName(kEventParamDirectObject),
+                                           EventParamType(typeEventHotKeyID),
+                                           nil, MemoryLayout<EventHotKeyID>.size, nil, &hkID)
+            if status == noErr,
+               let manager = HotKeyManager.managerRegistry[hkID.id] {
+                DispatchQueue.main.async { manager.onTrigger?() }
+            }
+            return noErr
+        }, 1, &spec, nil, nil)
+        HotKeyManager.sharedHandlerInstalled = true
+    }
+
+    private func presentRegistrationFailedAlert(status: OSStatus) {
+        let alert = NSAlert()
+        alert.messageText = "Hotkey Unavailable"
+        alert.informativeText = "SnapClip could not register ⌘⇧X as a global hotkey (error \(status)). Another app may already own this shortcut. You can still trigger captures from the menu bar icon."
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 }

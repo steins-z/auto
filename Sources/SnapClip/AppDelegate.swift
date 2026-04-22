@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import Carbon.HIToolbox
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
@@ -51,7 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         manager.onTrigger = { [weak self] in
             Task { @MainActor in self?.captureController.beginCapture() }
         }
-        manager.register(keyCode: 7, modifiers: [.maskCommand, .maskShift]) // 7 = "x"
+        manager.register(keyCode: UInt32(kVK_ANSI_X), modifiers: UInt32(cmdKey | shiftKey))
         self.hotKeyManager = manager
     }
 

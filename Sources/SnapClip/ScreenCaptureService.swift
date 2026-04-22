@@ -58,9 +58,9 @@ final class ScreenCaptureService {
 
     private func scaleFactor(for display: SCDisplay) -> CGFloat {
         let id = display.displayID
+        let key = NSDeviceDescriptionKey("NSScreenNumber")
         for screen in NSScreen.screens {
-            let key = NSDeviceDescriptionKey("NSScreenNumber")
-            if let num = screen.deviceDescription[key] as? NSNumber, num.uint32Value == id {
+            if (screen.deviceDescription[key] as? NSNumber)?.uint32Value == id {
                 return screen.backingScaleFactor
             }
         }
@@ -68,10 +68,6 @@ final class ScreenCaptureService {
     }
 
     private func displayScale(for window: SCWindow) -> CGFloat? {
-        guard let displayID = window.owningApplication.flatMap({ _ in
-            NSScreen.screens.first(where: { $0.frame.intersects(window.frame) })?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
-        }) else { return nil }
-        _ = displayID
-        return NSScreen.screens.first(where: { $0.frame.intersects(window.frame) })?.backingScaleFactor
+        NSScreen.screens.first { $0.frame.intersects(window.frame) }?.backingScaleFactor
     }
 }

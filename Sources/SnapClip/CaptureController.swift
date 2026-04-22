@@ -35,7 +35,10 @@ final class CaptureController {
 
     private func presentOverlays(content: SCShareableContent) {
         for screen in NSScreen.screens {
-            let overlay = OverlayWindow(screen: screen, content: content)
+            guard let overlay = OverlayWindow(screen: screen, content: content) else {
+                NSLog("SnapClip: no SCDisplay matched NSScreen \(screen.localizedName); skipping")
+                continue
+            }
             overlay.onComplete = { [weak self] result in
                 self?.dismissOverlays()
                 if let result {

@@ -9,7 +9,15 @@ final class OverlayWindow: NSWindow {
     private let content: SCShareableContent
     private var hostingView: NSHostingView<OverlayRootView>?
 
-    init(screen: NSScreen, content: SCShareableContent) {
+    /// Returns nil if no SCDisplay matches the given NSScreen — caller should skip this screen
+    /// rather than crashing.
+    init?(screen: NSScreen, content: SCShareableContent) {
+        let screenDisplayID = OverlayWindow.displayID(for: screen)
+        guard let display = content.displays.first(where: { $0.displayID == screenDisplayID })
+                ?? content.displays.first else {
+            return nil
+        }
+
         self.screenRef = screen
         self.content = content
         super.init(contentRect: screen.frame,
@@ -25,11 +33,7 @@ final class OverlayWindow: NSWindow {
         self.hasShadow = false
         self.setFrame(screen.frame, display: true)
 
-        let display = content.displays.first { $0.displayID == screenID(for: screen) } ?? content.displays.first!
-        let windows = content.windows.filter { window in
-            guard let frame = window.frameOrNil else { return false }
-            return screen.frame.intersects(frame)
-        }
+        let windows = content.windows.filter { screen.frame.intersects($0.frame) }
 
         let root = OverlayRootView(
             screenFrame: screen.frame,
@@ -44,15 +48,11 @@ final class OverlayWindow: NSWindow {
         self.hostingView = hosting
     }
 
-    private func screenID(for screen: NSScreen) -> CGDirectDisplayID {
+    static func displayID(for screen: NSScreen) -> CGDirectDisplayID {
         let key = NSDeviceDescriptionKey("NSScreenNumber")
         return (screen.deviceDescription[key] as? NSNumber)?.uint32Value ?? CGMainDisplayID()
     }
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
-}
-
-extension SCWindow {
-    var frameOrNil: CGRect? { self.frame }
 }

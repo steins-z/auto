@@ -105,7 +105,10 @@ struct OverlayRootView: View {
     }
 
     private func dimensionText(for rect: CGRect) -> String {
-        let scale = NSScreen.screens.first(where: { $0.frame == screenFrame })?.backingScaleFactor ?? 1
+        let key = NSDeviceDescriptionKey("NSScreenNumber")
+        let scale = NSScreen.screens.first(where: {
+            ($0.deviceDescription[key] as? NSNumber)?.uint32Value == display.displayID
+        })?.backingScaleFactor ?? 1
         let w = Int(rect.width * scale)
         let h = Int(rect.height * scale)
         return "\(w) × \(h) px"

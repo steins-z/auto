@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Build SnapClip as a macOS .app bundle.
-# Requires Xcode / Swift toolchain with macOS 13+ SDK.
+# Requires Xcode / Swift toolchain with macOS 14+ SDK.
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="$ROOT/.build"
